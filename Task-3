@@ -1,0 +1,113 @@
+import time
+import tweepy
+import mysql.connector
+from concurrent.futures import ThreadPoolExecutor
+
+# Twitter API credentials
+BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAHnWxAEAAAAAg8Oqq6twcPF2p5uiOGvko01W1lA%3DwjdFw0cHhgMC8MgBez8TEuBsPzCFRpzFfNWOnnkIkvk8zIne0O'
+API_KEY = 'go06rdQnUeZTZ38kCEOCj5EbF'
+API_KEY_SECRET = '5nf22VSBvKahtLIgyLNUy36wDHjST9VNF0T5D68ZSnL6eZmO0U'
+ACCESS_TOKEN = '1836400440302358528-JvaGjtgPgrfY6uc3VS8TS767jkBIL5'
+ACCESS_TOKEN_SECRET = 'tFOSKI5jyXjWiS9Ew0vksSPaNMrE0y9MW35LVS4MBhHFZ'
+
+# Authenticate with the Twitter API
+client = tweepy.Client(bearer_token=BEARER_TOKEN, 
+                       consumer_key=API_KEY, 
+                       consumer_secret=API_KEY_SECRET, 
+                       access_token=ACCESS_TOKEN, 
+                       access_token_secret=ACCESS_TOKEN_SECRET)
+
+# MySQL Database connection credentials
+db_config = {
+    'user': 'root',
+    'password': 'Sai$123',
+    'host': 'localhost',
+    'port': 3306,
+    'database': 'twitter_profiles'
+}
+
+# Connect to the database
+connection = mysql.connector.connect(**db_config)
+cursor = connection.cursor()
+
+# Create the table if it doesn't already exist
+create_table_query = """
+CREATE TABLE IF NOT EXISTS profiles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    profile_name VARCHAR(255),
+    profile_bio TEXT,
+    profile_website VARCHAR(255),
+    profile_location VARCHAR(255),
+    profile_following INT,
+    profile_followers INT
+);
+"""
+cursor.execute(create_table_query)
+
+# Function to fetch profile data
+def fetch_profile_data(usernames):
+    try:
+        # Fetch up to 100 users in one API call
+        users = client.get_users(usernames=usernames, user_fields=['description', 'location', 'public_metrics', 'url'])
+        profiles = []
+
+        for user in users.data:
+            profile_data = {
+                'name': user.name,
+                'bio': user.description if 'description' in user else None,
+                'website': user.url if 'url' in user else None,
+                'location': user.location if 'location' in user else None,
+                'following': user.public_metrics['following_count'],
+                'followers': user.public_metrics['followers_count']
+            }
+            profiles.append(profile_data)
+        return profiles
+    except tweepy.TooManyRequests:
+        print("Rate limit exceeded. Waiting for reset...")
+        time.sleep(900)  # Wait 15 minutes
+        return []
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return []
+
+# Function to insert data into MySQL
+def insert_data_to_mysql(data):
+    if not data:
+        return
+
+    insert_query = """
+    INSERT INTO profiles (profile_name, profile_bio, profile_website, profile_location, profile_following, profile_followers)
+    VALUES (%s, %s, %s, %s, %s, %s);
+    """
+    values = [(profile['name'], profile['bio'], profile['website'], profile['location'], profile['following'], profile['followers']) for profile in data]
+    cursor.executemany(insert_query, values)
+    connection.commit()
+
+# List of Twitter usernames (without URLs)
+usernames = [
+    "GTNUK1", "whatsapp", "aacb_CBPTrade", "aacbdotcom", "AAWindowPRODUCT",
+    "aandb_kia", "ABHomeInc", "Abrepro", "ACChristofiLtd", "aeclothing1",
+    "AETechnologies1", "wix", "AGInsuranceLLC"
+]
+
+# Batch size (max 100 usernames per API call)
+batch_size = 100
+
+# Function to process batches of usernames
+def process_batch(batch):
+    profiles = fetch_profile_data(batch)
+    if profiles:
+        insert_data_to_mysql(profiles)
+
+# Split usernames into batches
+batches = [usernames[i:i + batch_size] for i in range(0, len(usernames), batch_size)]
+
+# Process batches in parallel
+with ThreadPoolExecutor() as executor:
+    executor.map(process_batch, batches)
+
+# Close database connection
+cursor.close()
+connection.close()
+
+print("Data fetching and insertion completed successfully.")
